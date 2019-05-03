@@ -1,8 +1,8 @@
 package main
 
-// #cgo pkg-config: opencv cudart-9.0
-// #cgo LDFLAGS: -Lcaffe/lib -lcaffe -lglog -lboost_system -lboost_thread
-// #cgo CXXFLAGS: -std=c++11 -Icaffe/include -I.. -O2 -fomit-frame-pointer -Wall
+// #cgo pkg-config: opencv cudart-8.0
+// #cgo LDFLAGS: -lnvinfer -lnvcaffe_parser -lglog -lboost_system -lboost_thread
+// #cgo CXXFLAGS: -std=c++11 -I.. -O2 -fomit-frame-pointer -Wall
 // #include <stdlib.h>
 // #include "classification.h"
 import "C"
@@ -45,7 +45,7 @@ func main() {
 	cmean := C.CString(os.Args[3])
 	clabel := C.CString(os.Args[4])
 
-	log.Println("Initializing Caffe classifiers")
+	log.Println("Initializing TensorRT classifiers")
 	var err error
 	ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
 	if err != nil {

@@ -21,4 +21,4 @@ void classifier_destroy(classifier_ctx* ctx);
 }
 #endif
 
-#endif // CLASSIFICATION_H
+#endif

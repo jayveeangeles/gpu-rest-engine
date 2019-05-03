@@ -1,41 +1,112 @@
 #include "classification.h"
 
-#include <iosfwd>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <vector>
 
-#define USE_CUDNN 1
-#include <caffe/caffe.hpp>
+#include <cuda_runtime.h>
+#include <glog/logging.h>
 #include <opencv2/cudaarithm.hpp>
 #include <opencv2/cudaimgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
+#include "NvInfer.h"
+#include "NvCaffeParser.h"
+
 #include "common.h"
 #include "gpu_allocator.h"
 
-using namespace caffe;
+using namespace nvinfer1;
+using namespace nvcaffeparser1;
 using std::string;
-using GpuMat = cv::cuda::GpuMat;
+using GpuMat = cuda::GpuMat;
 using namespace cv;
 
 /* Pair (label, confidence) representing a prediction. */
 typedef std::pair<string, float> Prediction;
 
-/* Based on the cpp_classification example of Caffe, but with GPU
- * image preprocessing and a simple memory pool. */
+class Logger : public ILogger
+{
+    void log(Severity severity, const char* msg) override
+    {
+        // suppress info-level messages
+        if (severity != Severity::kINFO)
+            std::cout << msg << std::endl;
+    }
+};
+static Logger gLogger;
+
+class InferenceEngine
+{
+public:
+    InferenceEngine(const string& model_file,
+                    const string& trained_file);
+
+    ~InferenceEngine();
+
+    ICudaEngine* Get() const
+    {
+        return engine_;
+    }
+
+private:
+    ICudaEngine* engine_;
+};
+
+InferenceEngine::InferenceEngine(const string& model_file,
+                                 const string& trained_file)
+{
+    IBuilder* builder = createInferBuilder(gLogger);
+
+    // parse the caffe model to populate the network, then set the outputs
+    INetworkDefinition* network = builder->createNetwork();
+
+    ICaffeParser* parser = createCaffeParser();
+    auto blob_name_to_tensor = parser->parse(model_file.c_str(),
+                                             trained_file.c_str(),
+                                             *network,
+                                             nvinfer1::DataType::kFLOAT);
+    CHECK(blob_name_to_tensor) << "Could not parse the model";
+
+    // specify which tensors are outputs
+    network->markOutput(*blob_name_to_tensor->find("prob"));
+
+    // Build the engine
+    builder->setMaxBatchSize(1);
+    builder->setMaxWorkspaceSize(1 << 30);
+
+    engine_ = builder->buildCudaEngine(*network);
+    CHECK(engine_) << "Failed to create inference engine.";
+
+    network->destroy();
+    builder->destroy();
+}
+
+InferenceEngine::~InferenceEngine()
+{
+    engine_->destroy();
+}
+
 class Classifier
 {
 public:
-    Classifier(const string& model_file,
-               const string& trained_file,
+    Classifier(std::shared_ptr<InferenceEngine> engine,
                const string& mean_file,
                const string& label_file,
                GPUAllocator* allocator);
 
+    ~Classifier();
+
     std::vector<Prediction> Classify(const Mat& img, int N = 5);
 
 private:
+    void SetModel();
+
     void SetMean(const string& mean_file);
+
+    void SetLabels(const string& label_file);
 
     std::vector<float> Predict(const Mat& img);
 
@@ -46,48 +117,34 @@ private:
 
 private:
     GPUAllocator* allocator_;
-    std::shared_ptr<Net<float>> net_;
-    Size input_geometry_;
-    int num_channels_;
+    std::shared_ptr<InferenceEngine> engine_;
+    IExecutionContext* context_;
     GpuMat mean_;
     std::vector<string> labels_;
+    DimsCHW input_dim_;
+    Size input_cv_size_;
+    float* input_layer_;
+    DimsCHW output_dim_;
+    float* output_layer_;
 };
 
-Classifier::Classifier(const string& model_file,
-                       const string& trained_file,
+Classifier::Classifier(std::shared_ptr<InferenceEngine> engine,
                        const string& mean_file,
                        const string& label_file,
                        GPUAllocator* allocator)
-    : allocator_(allocator)
+    : allocator_(allocator),
+      engine_(engine)
 {
-    Caffe::set_mode(Caffe::GPU);
-
-    /* Load the network. */
-    net_ = std::make_shared<Net<float>>(model_file, TEST);
-    net_->CopyTrainedLayersFrom(trained_file);
-
-    CHECK_EQ(net_->num_inputs(), 1) << "Network should have exactly one input.";
-    CHECK_EQ(net_->num_outputs(), 1) << "Network should have exactly one output.";
-
-    Blob<float>* input_layer = net_->input_blobs()[0];
-    num_channels_ = input_layer->channels();
-    CHECK(num_channels_ == 3 || num_channels_ == 1)
-        << "Input layer should have 1 or 3 channels.";
-    input_geometry_ = Size(input_layer->width(), input_layer->height());
-
-    /* Load the binaryproto mean file. */
+    SetModel();
     SetMean(mean_file);
+    SetLabels(label_file);
+}
 
-    /* Load labels. */
-    std::ifstream labels(label_file.c_str());
-    CHECK(labels) << "Unable to open labels file " << label_file;
-    string line;
-    while (std::getline(labels, line))
-        labels_.push_back(string(line));
-
-    Blob<float>* output_layer = net_->output_blobs()[0];
-    CHECK_EQ(labels_.size(), output_layer->channels())
-        << "Number of labels is different from the output layer dimension.";
+Classifier::~Classifier()
+{
+    context_->destroy();
+    CHECK_EQ(cudaFree(input_layer_), cudaSuccess) << "Could not free input layer";
+    CHECK_EQ(cudaFree(output_layer_), cudaSuccess) << "Could not free output layer";
 }
 
 static bool PairCompare(const std::pair<float, int>& lhs,
@@ -115,7 +172,6 @@ std::vector<Prediction> Classifier::Classify(const Mat& img, int N)
 {
     std::vector<float> output = Predict(img);
 
-    N = std::min<int>(labels_.size(), N);
     std::vector<int> maxN = Argmax(output, N);
     std::vector<Prediction> predictions;
     for (int i = 0; i < N; ++i)
@@ -127,27 +183,51 @@ std::vector<Prediction> Classifier::Classify(const Mat& img, int N)
     return predictions;
 }
 
-/* Load the mean file in binaryproto format. */
+void Classifier::SetModel()
+{
+    ICudaEngine* engine = engine_->Get();
+
+    context_ = engine->createExecutionContext();
+    CHECK(context_) << "Failed to create execution context.";
+
+    int input_index = engine->getBindingIndex("data");
+    input_dim_ = static_cast<DimsCHW&&>(engine->getBindingDimensions(input_index));
+    input_cv_size_ = Size(input_dim_.w(), input_dim_.h());
+    // FIXME: could be wrapped in a thrust or GpuMat object.
+    size_t input_size = input_dim_.c() * input_dim_.h() * input_dim_.w() * sizeof(float);
+    cudaError_t st = cudaMalloc(&input_layer_, input_size);
+    CHECK_EQ(st, cudaSuccess) << "Could not allocate input layer.";
+
+    int output_index = engine->getBindingIndex("prob");
+    output_dim_ = static_cast<DimsCHW&&>(engine->getBindingDimensions(output_index));
+    size_t output_size = output_dim_.c() * output_dim_.h() * output_dim_.w() * sizeof(float);
+    st = cudaMalloc(&output_layer_, output_size);
+    CHECK_EQ(st, cudaSuccess) << "Could not allocate output layer.";
+}
+
 void Classifier::SetMean(const string& mean_file)
 {
-    BlobProto blob_proto;
-    ReadProtoFromBinaryFileOrDie(mean_file.c_str(), &blob_proto);
+    ICaffeParser* parser = createCaffeParser();
+    IBinaryProtoBlob* mean_blob = parser->parseBinaryProto(mean_file.c_str());
+    parser->destroy();
+    CHECK(mean_blob) << "Could not load mean file.";
 
-    /* Convert from BlobProto to Blob<float> */
-    Blob<float> mean_blob;
-    mean_blob.FromProto(blob_proto);
-    CHECK_EQ(mean_blob.channels(), num_channels_)
+    DimsNCHW mean_dim = mean_blob->getDimensions();
+    int c = mean_dim.c();
+    int h = mean_dim.h();
+    int w = mean_dim.w();
+    CHECK_EQ(c, input_dim_.c())
         << "Number of channels of mean file doesn't match input layer.";
 
     /* The format of the mean file is planar 32-bit float BGR or grayscale. */
     std::vector<Mat> channels;
-    float* data = mean_blob.mutable_cpu_data();
-    for (int i = 0; i < num_channels_; ++i)
+    float* data = (float*)mean_blob->getData();
+    for (int i = 0; i < c; ++i)
     {
         /* Extract an individual channel. */
-        Mat channel(mean_blob.height(), mean_blob.width(), CV_32FC1, data);
+        Mat channel(h, w, CV_32FC1, data);
         channels.push_back(channel);
-        data += mean_blob.height() * mean_blob.width();
+        data += h * w;
     }
 
     /* Merge the separate channels into a single image. */
@@ -157,45 +237,49 @@ void Classifier::SetMean(const string& mean_file)
     /* Compute the global mean pixel value and create a mean image
      * filled with this value. */
     Scalar channel_mean = mean(packed_mean);
-    Mat host_mean = Mat(input_geometry_, packed_mean.type(), channel_mean);
+    Mat host_mean = Mat(input_cv_size_, packed_mean.type(), channel_mean);
     mean_.upload(host_mean);
+}
+
+void Classifier::SetLabels(const string& label_file)
+{
+    std::ifstream labels(label_file.c_str());
+    CHECK(labels) << "Unable to open labels file " << label_file;
+    string line;
+    while (std::getline(labels, line))
+        labels_.push_back(string(line));
 }
 
 std::vector<float> Classifier::Predict(const Mat& img)
 {
-    Blob<float>* input_layer = net_->input_blobs()[0];
-    input_layer->Reshape(1, num_channels_,
-                         input_geometry_.height, input_geometry_.width);
-    /* Forward dimension change to all layers. */
-    net_->Reshape();
-
     std::vector<GpuMat> input_channels;
     WrapInputLayer(&input_channels);
 
     Preprocess(img, &input_channels);
 
-    net_->Forward();
+    void* buffers[2] = { input_layer_, output_layer_ };
+    context_->execute(1, buffers);
 
-    /* Copy the output layer to a std::vector */
-    Blob<float>* output_layer = net_->output_blobs()[0];
-    const float* begin = output_layer->cpu_data();
-    const float* end = begin + output_layer->channels();
-    return std::vector<float>(begin, end);
+    size_t output_size = output_dim_.c() * output_dim_.h() * output_dim_.w();
+    std::vector<float> output(output_size);
+    cudaError_t st = cudaMemcpy(output.data(), output_layer_, output_size * sizeof(float), cudaMemcpyDeviceToHost);
+    if (st != cudaSuccess)
+        throw std::runtime_error("could not copy output layer back to host");
+
+    return output;
 }
 
-/* Wrap the input layer of the network in separate GpuMat objects
+/* Wrap the input layer of the network in separate Mat objects
  * (one per channel). This way we save one memcpy operation and we
  * don't need to rely on cudaMemcpy2D. The last preprocessing
  * operation will write the separate channels directly to the input
  * layer. */
 void Classifier::WrapInputLayer(std::vector<GpuMat>* input_channels)
 {
-    Blob<float>* input_layer = net_->input_blobs()[0];
-
-    int width = input_layer->width();
-    int height = input_layer->height();
-    float* input_data = input_layer->mutable_gpu_data();
-    for (int i = 0; i < input_layer->channels(); ++i)
+    int width = input_dim_.w();
+    int height = input_dim_.h();
+    float* input_data = input_layer_;
+    for (int i = 0; i < input_dim_.c(); ++i)
     {
         GpuMat channel(height, width, CV_32FC1, input_data);
         input_channels->push_back(channel);
@@ -206,28 +290,29 @@ void Classifier::WrapInputLayer(std::vector<GpuMat>* input_channels)
 void Classifier::Preprocess(const Mat& host_img,
                             std::vector<GpuMat>* input_channels)
 {
+    int num_channels = input_dim_.c();
     GpuMat img(host_img, allocator_);
     /* Convert the input image to the input image format of the network. */
     GpuMat sample(allocator_);
-    if (img.channels() == 3 && num_channels_ == 1)
+    if (img.channels() == 3 && num_channels == 1)
         cuda::cvtColor(img, sample, CV_BGR2GRAY);
-    else if (img.channels() == 4 && num_channels_ == 1)
+    else if (img.channels() == 4 && num_channels == 1)
         cuda::cvtColor(img, sample, CV_BGRA2GRAY);
-    else if (img.channels() == 4 && num_channels_ == 3)
+    else if (img.channels() == 4 && num_channels == 3)
         cuda::cvtColor(img, sample, CV_BGRA2BGR);
-    else if (img.channels() == 1 && num_channels_ == 3)
+    else if (img.channels() == 1 && num_channels == 3)
         cuda::cvtColor(img, sample, CV_GRAY2BGR);
     else
         sample = img;
 
     GpuMat sample_resized(allocator_);
-    if (sample.size() != input_geometry_)
-        cuda::resize(sample, sample_resized, input_geometry_);
+    if (sample.size() != input_cv_size_)
+        cuda::resize(sample, sample_resized, input_cv_size_);
     else
         sample_resized = sample;
 
     GpuMat sample_float(allocator_);
-    if (num_channels_ == 3)
+    if (num_channels == 3)
         sample_resized.convertTo(sample_float, CV_32FC3);
     else
         sample_resized.convertTo(sample_float, CV_32FC1);
@@ -236,12 +321,11 @@ void Classifier::Preprocess(const Mat& host_img,
     cuda::subtract(sample_float, mean_, sample_normalized);
 
     /* This operation will write the separate BGR planes directly to the
-     * input layer of the network because it is wrapped by the GpuMat
+     * input layer of the network because it is wrapped by the Mat
      * objects in input_channels. */
     cuda::split(sample_normalized, *input_channels);
 
-    CHECK(reinterpret_cast<float*>(input_channels->at(0).data)
-          == net_->input_blobs()[0]->gpu_data())
+    CHECK(reinterpret_cast<float*>(input_channels->at(0).data) == input_layer_)
         << "Input channels are not wrapping the input layer of the network.";
 }
 
@@ -259,38 +343,33 @@ public:
 
     static bool IsCompatible(int device)
     {
-        cudaError_t st = cudaSetDevice(device);
+	cudaError_t st = cudaSetDevice(device);
         if (st != cudaSuccess)
             return false;
 
-        cuda::DeviceInfo info;
-        if (!info.isCompatible())
+	cuda::DeviceInfo dev_info;
+	if (dev_info.majorVersion() < 3)
             return false;
 
         return true;
     }
 
-    ExecContext(const string& model_file,
-                 const string& trained_file,
-                 const string& mean_file,
-                 const string& label_file,
-                 int device)
+    ExecContext(std::shared_ptr<InferenceEngine> engine,
+                const string& mean_file,
+                const string& label_file,
+                int device)
         : device_(device)
     {
-        cudaError_t st = cudaSetDevice(device_);
-        if (st != cudaSuccess)
+	cudaError_t st = cudaSetDevice(device_);
+
+	if (st != cudaSuccess)
             throw std::invalid_argument("could not set CUDA device");
 
         allocator_.reset(new GPUAllocator(1024 * 1024 * 128));
-        caffe_context_.reset(new Caffe);
-        Caffe::Set(caffe_context_.get());
-        classifier_.reset(new Classifier(model_file, trained_file,
-                                         mean_file, label_file,
-                                         allocator_.get()));
-        Caffe::Set(nullptr);
+        classifier_.reset(new Classifier(engine, mean_file, label_file, allocator_.get()));
     }
 
-    Classifier* CaffeClassifier()
+    Classifier* TensorRTClassifier()
     {
         return classifier_.get();
     }
@@ -302,18 +381,15 @@ private:
         if (st != cudaSuccess)
             throw std::invalid_argument("could not set CUDA device");
         allocator_->reset();
-        Caffe::Set(caffe_context_.get());
     }
 
     void Deactivate()
     {
-        Caffe::Set(nullptr);
     }
 
 private:
     int device_;
     std::unique_ptr<GPUAllocator> allocator_;
-    std::unique_ptr<Caffe> caffe_context_;
     std::unique_ptr<Classifier> classifier_;
 };
 
@@ -322,10 +398,6 @@ struct classifier_ctx
     ContextPool<ExecContext> pool;
 };
 
-/* Currently, 2 execution contexts are created per GPU. In other words, 2
- * inference tasks can execute in parallel on the same GPU. This helps improve
- * GPU utilization since some kernel operations of inference will not fully use
- * the GPU. */
 constexpr static int kContextsPerDevice = 2;
 
 classifier_ctx* classifier_initialize(char* model_file, char* trained_file,
@@ -349,10 +421,12 @@ classifier_ctx* classifier_initialize(char* model_file, char* trained_file,
                 continue;
             }
 
+            std::shared_ptr<InferenceEngine> engine(new InferenceEngine(model_file, trained_file));
+
             for (int i = 0; i < kContextsPerDevice; ++i)
             {
-                std::unique_ptr<ExecContext> context(new ExecContext(model_file, trained_file,
-                                                                       mean_file, label_file, dev));
+                std::unique_ptr<ExecContext> context(new ExecContext(engine, mean_file,
+                                                                     label_file, dev));
                 pool.Push(std::move(context));
             }
         }
@@ -390,7 +464,7 @@ const char* classifier_classify(classifier_ctx* ctx,
              * will be automatically released back to the context pool when
              * exiting this scope. */
             ScopedContext<ExecContext> context(ctx->pool);
-            auto classifier = context->CaffeClassifier();
+            auto classifier = context->TensorRTClassifier();
             predictions = classifier->Classify(img);
         }
 
