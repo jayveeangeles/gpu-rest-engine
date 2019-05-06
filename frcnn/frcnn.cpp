@@ -29,7 +29,7 @@ using std::string;
 using GpuMat = cuda::GpuMat;
 using namespace cv;
 
-// using milli = std::chrono::milliseconds;
+using milli = std::chrono::milliseconds;
 
 const char* INPUT_BLOB_NAME0 = "data";
 const char* INPUT_BLOB_NAME1 = "im_info";
@@ -138,7 +138,7 @@ public:
 
   ~FRCNNDetector();
 
-  std::vector<Prediction> Classify(const Mat& img);
+  std::vector<Prediction> Detect(const Mat& img);
 
 private:
   void SetModel();
@@ -277,7 +277,7 @@ void FRCNNDetector::SetLabels(const string& label_file)
 }
 
 /* Return the top N predictions. */
-std::vector<Prediction> FRCNNDetector::Classify(const Mat& img)
+std::vector<Prediction> FRCNNDetector::Detect(const Mat& img)
 {
   std::vector<box *> boxes;
   std::vector<Prediction> predictions;
@@ -522,18 +522,18 @@ const char* frcnn_detect(frcnn_ctx* ctx,
           * will be automatically released back to the context pool when
           * exiting this scope. */
       ScopedContext<ExecContext> context(ctx->pool);
-      auto classifier = context->TensorRTFRCNNDetector();
+      auto detector = context->TensorRTFRCNNDetector();
       // auto start = std::chrono::high_resolution_clock::now();
-      predictions = classifier->Classify(img);
+      predictions = detector->Detect(img);
       // auto finish = std::chrono::high_resolution_clock::now();
-      // gLogInfo << "classify() took "
+      // std::cout << "classify() took "
       //     << std::chrono::duration_cast<milli>(finish - start).count()
       //     << " milliseconds\n";
     }
 
     /* Write the top N predictions in JSON format. */
     std::ostringstream os;
-    os << "[";
+    os << "{\"classified\": [";
     for (size_t i = 0; i < predictions.size(); ++i)
     {
         Prediction p = predictions[i];
@@ -544,11 +544,12 @@ const char* frcnn_detect(frcnn_ctx* ctx,
         os << "\"xmin\":" << std::fixed << static_cast<int>(p.second->x) << ",";
         os << "\"xmax\":" << std::fixed << static_cast<int>(p.second->y) << ",";
         os << "\"ymin\":" << std::fixed << static_cast<int>(p.second->w) << ",";
-        os << "\"ymax\":" << std::fixed << static_cast<int>(p.second->h) << "}";
+        os << "\"ymax\":" << std::fixed << static_cast<int>(p.second->h) << ",";
+        os << "\"attr\": []}";
         if (i != predictions.size() - 1)
             os << ",";
     }
-    os << "]";
+    os << "], \"result\": \"success\"}";
 
     errno = 0;
     std::string str = os.str();
@@ -557,7 +558,11 @@ const char* frcnn_detect(frcnn_ctx* ctx,
   catch (const std::invalid_argument&)
   {
     errno = EINVAL;
-    return nullptr;
+    std::ostringstream os;
+    os << "{\"classified\": [], \"result\": \"fail\"}";
+
+    std::string str = os.str();
+    return strdup(str.c_str());
   }
 }
 

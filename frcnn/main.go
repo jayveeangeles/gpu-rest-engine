@@ -35,7 +35,8 @@ func FRCNNDetect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
-	}
+  }
+  
 	defer C.free(unsafe.Pointer(cstr))
 	io.WriteString(w, C.GoString(cstr))
 }
