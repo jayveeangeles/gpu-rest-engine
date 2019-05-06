@@ -1,10 +1,10 @@
 package main
 
-// #cgo pkg-config: opencv cudart-8.0
-// #cgo LDFLAGS: -lnvinfer -lnvcaffe_parser -lglog -lboost_system -lboost_thread
+// #cgo pkg-config: opencv cudart-10.0
+// #cgo LDFLAGS: -lnvinfer -lnvcaffe_parser -lnvinfer_plugin -lglog -lboost_system -lboost_thread
 // #cgo CXXFLAGS: -std=c++11 -I.. -O2 -fomit-frame-pointer -Wall
 // #include <stdlib.h>
-// #include "classification.h"
+// #include "frcnn.h"
 import "C"
 import "unsafe"
 
@@ -40,14 +40,15 @@ func classify(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	cmodel := C.CString(os.Args[1])
-	ctrained := C.CString(os.Args[2])
-	cmean := C.CString(os.Args[3])
-	clabel := C.CString(os.Args[4])
+	cmodel    := C.CString(os.Args[1])
+	ctrained  := C.CString(os.Args[2])
+  clabel    := C.CString(os.Args[3])
+  // ctrtmodel := C.CString(os.Args[4])
 
 	log.Println("Initializing TensorRT classifiers")
 	var err error
-	ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
+  // ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
+  ctx, err = C.classifier_initialize(cmodel, ctrained, clabel)
 	if err != nil {
 		log.Fatalln("could not initialize classifier:", err)
 		return

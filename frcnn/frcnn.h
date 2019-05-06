@@ -1,5 +1,5 @@
-#ifndef CLASSIFICATION_H
-#define CLASSIFICATION_H
+#ifndef FRCNN_H_
+#define FRCNN_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,8 +9,7 @@ extern "C" {
 
 typedef struct classifier_ctx classifier_ctx;
 
-classifier_ctx* classifier_initialize(char* model_file, char* trained_file,
-                                      char* mean_file, char* label_file);
+classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char* label_file);
 
 const char* classifier_classify(classifier_ctx* ctx,
                                 char* buffer, size_t length);
