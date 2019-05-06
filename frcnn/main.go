@@ -7,13 +7,14 @@ package main
 // #include "frcnn.h"
 import "C"
 import "unsafe"
+import "flag"
 
 import (
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
+	// "os"
 )
 
 var ctx *C.classifier_ctx
@@ -40,9 +41,17 @@ func classify(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	cmodel    := C.CString(os.Args[1])
-	ctrained  := C.CString(os.Args[2])
-  clabel    := C.CString(os.Args[3])
+  var model, trained, label string
+
+  flag.StringVar(&model,    "model",    "./deploy.pt",        "model prototxt")
+  flag.StringVar(&trained,  "trained",  "./model.caffemodel", "trained model")
+  flag.StringVar(&label,    "label",    "./cls.txt",          "text file with labels")
+
+  flag.Parse()
+
+	cmodel    := C.CString(model)
+	ctrained  := C.CString(trained)
+  clabel    := C.CString(label)
   // ctrtmodel := C.CString(os.Args[4])
 
 	log.Println("Initializing TensorRT classifiers")
@@ -53,7 +62,11 @@ func main() {
 		log.Fatalln("could not initialize classifier:", err)
 		return
 	}
-	defer C.classifier_destroy(ctx)
+  defer C.classifier_destroy(ctx)
+  defer C.free(unsafe.Pointer(cmodel))
+  defer C.free(unsafe.Pointer(ctrained))
+  defer C.free(unsafe.Pointer(clabel))
+  // defer C.free(unsafe.Pointer(ctrtmodel))
 
 	log.Println("Adding REST endpoint /api/classify")
 	http.HandleFunc("/api/classify", classify)
