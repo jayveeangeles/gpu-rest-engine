@@ -7,14 +7,14 @@ extern "C" {
 
 #include <stddef.h>
 
-typedef struct classifier_ctx classifier_ctx;
+typedef struct frcnn_ctx frcnn_ctx;
 
-classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char* label_file, char* trt_model);
+frcnn_ctx* frcnn_initialize(char* model_file, char* trained_file, char* label_file, char* trt_model);
 
-const char* classifier_classify(classifier_ctx* ctx,
+const char* frcnn_detect(frcnn_ctx* ctx,
                                 char* buffer, size_t length);
 
-void classifier_destroy(classifier_ctx* ctx);
+void frcnn_destroy(frcnn_ctx* ctx);
 
 #ifdef __cplusplus
 }

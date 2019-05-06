@@ -17,9 +17,9 @@ import (
 	// "os"
 )
 
-var ctx *C.classifier_ctx
+var ctx *C.frcnn_ctx
 
-func classify(w http.ResponseWriter, r *http.Request) {
+func FRCNNDetect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "", http.StatusMethodNotAllowed)
 		return
@@ -31,7 +31,7 @@ func classify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cstr, err := C.classifier_classify(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
+	cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -58,19 +58,19 @@ func main() {
 	log.Println("Initializing TensorRT classifiers")
 	var err error
   // ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
-  ctx, err = C.classifier_initialize(cmodel, ctrained, clabel, ctrtmodel)
+  ctx, err = C.frcnn_initialize(cmodel, ctrained, clabel, ctrtmodel)
 	if err != nil {
 		log.Fatalln("could not initialize classifier:", err)
 		return
 	}
-  defer C.classifier_destroy(ctx)
+  defer C.frcnn_destroy(ctx)
   defer C.free(unsafe.Pointer(cmodel))
   defer C.free(unsafe.Pointer(ctrained))
   defer C.free(unsafe.Pointer(clabel))
   defer C.free(unsafe.Pointer(ctrtmodel))
 
-	log.Println("Adding REST endpoint /api/classify")
-	http.HandleFunc("/api/classify", classify)
+	log.Println("Adding REST endpoint /api/inference")
+	http.HandleFunc("/api/inference", FRCNNDetect)
 	log.Println("Starting server listening on :8000")
 	log.Fatal(http.ListenAndServe(":8000", nil))
 }

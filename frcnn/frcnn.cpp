@@ -129,14 +129,14 @@ InferenceEngine::~InferenceEngine()
   engine_->destroy();
 }
 
-class Classifier
+class FRCNNDetector
 {
 public:
-  Classifier(std::shared_ptr<InferenceEngine> engine,
+  FRCNNDetector(std::shared_ptr<InferenceEngine> engine,
             const string& label_file,
             GPUAllocator* allocator);
 
-  ~Classifier();
+  ~FRCNNDetector();
 
   std::vector<Prediction> Classify(const Mat& img);
 
@@ -189,7 +189,7 @@ private:
   std::vector<float> pred_bboxes_;
 };
 
-Classifier::Classifier(std::shared_ptr<InferenceEngine> engine,
+FRCNNDetector::FRCNNDetector(std::shared_ptr<InferenceEngine> engine,
                        const string& label_file,
                        GPUAllocator* allocator)
     : allocator_(allocator),
@@ -213,7 +213,7 @@ Classifier::Classifier(std::shared_ptr<InferenceEngine> engine,
   pred_bboxes_.assign(NMS_MAX_OUT * (labels_.size() + 1) * 4, 0);
 }
 
-Classifier::~Classifier()
+FRCNNDetector::~FRCNNDetector()
 {
   context_->destroy();
   cudaStreamDestroy(stream_);
@@ -224,7 +224,7 @@ Classifier::~Classifier()
   CHECK_EQ(cudaFree(buffers_[output_index2_]), cudaSuccess) << "Could not free rois layer"; ;
 }
 
-void Classifier::SetModel()
+void FRCNNDetector::SetModel()
 {
   ICudaEngine* engine = engine_->Get();
 
@@ -258,7 +258,7 @@ void Classifier::SetModel()
   input_cv_size_ = Size(input_dim_.w(), input_dim_.h());
 }
 
-void Classifier::SetMean()
+void FRCNNDetector::SetMean()
 {
     /* Compute the global mean pixel value and create a mean image
      * filled with this value. */
@@ -267,7 +267,7 @@ void Classifier::SetMean()
     mean_.upload(host_mean);
 }
 
-void Classifier::SetLabels(const string& label_file)
+void FRCNNDetector::SetLabels(const string& label_file)
 {
   std::ifstream labels(label_file.c_str());
   CHECK(labels) << "Unable to open labels file " << label_file;
@@ -277,7 +277,7 @@ void Classifier::SetLabels(const string& label_file)
 }
 
 /* Return the top N predictions. */
-std::vector<Prediction> Classifier::Classify(const Mat& img)
+std::vector<Prediction> FRCNNDetector::Classify(const Mat& img)
 {
   std::vector<box *> boxes;
   std::vector<Prediction> predictions;
@@ -293,7 +293,7 @@ std::vector<Prediction> Classifier::Classify(const Mat& img)
   return predictions;
 }
 
-void Classifier::Predict(const Mat& img)
+void FRCNNDetector::Predict(const Mat& img)
 {
   std::vector<GpuMat> input_channels;
 
@@ -317,7 +317,7 @@ void Classifier::Predict(const Mat& img)
  * don't need to rely on cudaMemcpy2D. The last preprocessing
  * operation will write the separate channels directly to the input
  * layer. */
-void Classifier::WrapInputLayer(std::vector<GpuMat>* input_channels)
+void FRCNNDetector::WrapInputLayer(std::vector<GpuMat>* input_channels)
 {
   int width = input_dim_.w();
   int height = input_dim_.h();
@@ -330,7 +330,7 @@ void Classifier::WrapInputLayer(std::vector<GpuMat>* input_channels)
   }
 }
 
-void Classifier::Preprocess(const Mat& host_img,
+void FRCNNDetector::Preprocess(const Mat& host_img,
                             std::vector<GpuMat>* input_channels)
 {
     if (first_frame_) 
@@ -428,12 +428,12 @@ class ExecContext
         throw std::invalid_argument("could not set CUDA device");
 
       allocator_.reset(new GPUAllocator(1024 * 1024 * 128));
-      classifier_.reset(new Classifier(engine, label_file, allocator_.get()));
+      frcnn_detector.reset(new FRCNNDetector(engine, label_file, allocator_.get()));
     }
 
-    Classifier* TensorRTClassifier()
+    FRCNNDetector* TensorRTFRCNNDetector()
     {
-      return classifier_.get();
+      return frcnn_detector.get();
     }
 
   private:
@@ -450,17 +450,17 @@ class ExecContext
   private:
     int device_;
     std::unique_ptr<GPUAllocator> allocator_;
-    std::unique_ptr<Classifier> classifier_;
+    std::unique_ptr<FRCNNDetector> frcnn_detector;
 };
 
-struct classifier_ctx
+struct frcnn_ctx
 {
   ContextPool<ExecContext> pool;
 };
 
 constexpr static int kContextsPerDevice = 2;
 
-classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char* label_file, char* trt_model)
+frcnn_ctx* frcnn_initialize(char* model_file, char* trained_file, char* label_file, char* trt_model)
 {
   try
   {
@@ -492,7 +492,7 @@ classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char
     if (pool.Size() == 0)
       throw std::invalid_argument("no suitable CUDA device");
 
-    classifier_ctx* ctx = new classifier_ctx{std::move(pool)};
+    frcnn_ctx* ctx = new frcnn_ctx{std::move(pool)};
     /* Successful CUDA calls can set errno. */
     errno = 0;
     return ctx;
@@ -505,7 +505,7 @@ classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char
   }
 }
 
-const char* classifier_classify(classifier_ctx* ctx,
+const char* frcnn_detect(frcnn_ctx* ctx,
                                 char* buffer, size_t length)
 {
   try
@@ -522,7 +522,7 @@ const char* classifier_classify(classifier_ctx* ctx,
           * will be automatically released back to the context pool when
           * exiting this scope. */
       ScopedContext<ExecContext> context(ctx->pool);
-      auto classifier = context->TensorRTClassifier();
+      auto classifier = context->TensorRTFRCNNDetector();
       // auto start = std::chrono::high_resolution_clock::now();
       predictions = classifier->Classify(img);
       // auto finish = std::chrono::high_resolution_clock::now();
@@ -561,7 +561,7 @@ const char* classifier_classify(classifier_ctx* ctx,
   }
 }
 
-void classifier_destroy(classifier_ctx* ctx)
+void frcnn_destroy(frcnn_ctx* ctx)
 {
   delete ctx;
 }
