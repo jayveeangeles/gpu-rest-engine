@@ -7,6 +7,28 @@
 #include <cfloat>
 #include <cmath>
 #include <iostream>
+#include <experimental/filesystem>
+#include <fstream>
+#include <iomanip>
+#include <cassert>
+
+#include "NvInfer.h"
+#include "NvInferPlugin.h"
+
+using namespace nvinfer1;
+using namespace plugin;
+
+#include "logger.h"
+
+// class Logger : public ILogger
+// {
+//   void log(Severity severity, const char* msg) override
+//   {
+//     // suppress info-level messages
+//     if (severity != Severity::kINFO)
+//       std::cout << msg << std::endl;
+//   }
+// };
 
 struct box {
   float x;
@@ -21,5 +43,8 @@ struct box {
 };
 
 void getBbox(std::vector<box*>& boxes, float **outputData, float nmsThresh, float detectThresh, float* imInfo, int batchSize, const int nmsMaxOut, const int outputClsSize);
+bool fileExists(const std::string fileName);
+nvinfer1::ICudaEngine* loadTRTEngine(const std::string planFilePath, nvinfer1::IPluginFactory* pluginFactory,
+                                     Logger& logger);
 
 #endif

@@ -29,7 +29,7 @@ using std::string;
 using GpuMat = cuda::GpuMat;
 using namespace cv;
 
-using milli = std::chrono::milliseconds;
+// using milli = std::chrono::milliseconds;
 
 const char* INPUT_BLOB_NAME0 = "data";
 const char* INPUT_BLOB_NAME1 = "im_info";
@@ -43,22 +43,12 @@ static const int NMS_MAX_OUT = 300; // This value needs to be changed as per the
 
 typedef std::pair<string, box*> Prediction;
 
-class Logger : public ILogger
-{
-  void log(Severity severity, const char* msg) override
-  {
-    // suppress info-level messages
-    if (severity != Severity::kINFO)
-        std::cout << msg << std::endl;
-  }
-};
-static Logger gLogger;
-
 class InferenceEngine
 {
 public:
   InferenceEngine(const string& model_file,
                   const string& trained_file,
+                  const string& trt_model,
                   const std::vector<std::string>& outputs);
 
   ~InferenceEngine();
@@ -68,11 +58,6 @@ public:
     return engine_;
   }
 
-  IHostMemory* GetSerialized() const
-  {
-    return serialized_model_;
-  }
-
 private:
   ICudaEngine* engine_;
   IHostMemory* serialized_model_;
@@ -80,11 +65,12 @@ private:
 
 InferenceEngine::InferenceEngine(const string& model_file,
                                  const string& trained_file,
+                                 const string& trt_model,
                                  const std::vector<std::string>& outputs)
 {
   FRCNNPluginFactory pluginFactorySerialize; //
-  initLibNvInferPlugins(&gLogger, "");
-  IBuilder* builder = createInferBuilder(gLogger);
+  initLibNvInferPlugins(&gLogger.getTRTLogger(), "");
+  IBuilder* builder = createInferBuilder(gLogger.getTRTLogger());
 
   // parse the caffe model to populate the network, then set the outputs
   INetworkDefinition* network = builder->createNetwork();
@@ -102,6 +88,14 @@ InferenceEngine::InferenceEngine(const string& model_file,
   for (auto& s : outputs)
     network->markOutput(*blob_name_to_tensor->find(s.c_str()));
 
+  if (fileExists(trt_model))
+  {
+    gLogInfo << "Using previously generated plan file located at " << trt_model
+        << std::endl;
+    engine_ = loadTRTEngine(trt_model, nullptr, gLogger);
+    return;
+  }
+
   // Build the engine
   builder->setMaxBatchSize(1);
   builder->setMaxWorkspaceSize(1 << 30);
@@ -111,24 +105,34 @@ InferenceEngine::InferenceEngine(const string& model_file,
   serialized_model_ = engine_->serialize();
   CHECK(engine_) << "Failed to create inference engine.";
 
+  // write data to output file
+  std::stringstream gie_model_stream;
+  gie_model_stream.seekg(0, gie_model_stream.beg);
+  gie_model_stream.write(static_cast<const char*>(serialized_model_->data()), serialized_model_->size());
+  std::ofstream outFile;
+  outFile.open(trt_model);
+  outFile << gie_model_stream.rdbuf();
+  outFile.close();
+
+  gLogInfo << "Serialized plan file cached at location : " << trt_model << std::endl;
+
   network->destroy();
   builder->destroy();
   parser->destroy();
   pluginFactorySerialize.destroyPlugin();
+  serialized_model_->destroy();
   shutdownProtobufLibrary();
 }
 
 InferenceEngine::~InferenceEngine()
 {
   engine_->destroy();
-  serialized_model_->destroy();
 }
 
 class Classifier
 {
 public:
   Classifier(std::shared_ptr<InferenceEngine> engine,
-            // const string& mean_file,
             const string& label_file,
             GPUAllocator* allocator);
 
@@ -186,7 +190,6 @@ private:
 };
 
 Classifier::Classifier(std::shared_ptr<InferenceEngine> engine,
-                      //  const string& mean_file,
                        const string& label_file,
                        GPUAllocator* allocator)
     : allocator_(allocator),
@@ -223,12 +226,7 @@ Classifier::~Classifier()
 
 void Classifier::SetModel()
 {
-  // ICudaEngine* engine = engine_->Get();
-
-  // FRCNNPluginFactory pluginFactorySerialize; 
-  IHostMemory* model_stream = engine_->GetSerialized();
-  IRuntime* runtime = createInferRuntime(gLogger);
-  ICudaEngine* engine = runtime->deserializeCudaEngine(model_stream->data(), model_stream->size(), nullptr);
+  ICudaEngine* engine = engine_->Get();
 
   input_index0_  = engine->getBindingIndex(INPUT_BLOB_NAME0);
   input_index1_  = engine->getBindingIndex(INPUT_BLOB_NAME1);
@@ -246,15 +244,15 @@ void Classifier::SetModel()
   cls_prob_size_  = NMS_MAX_OUT * (labels_.size() + 1);
   rois_size_      = NMS_MAX_OUT * 4;
 
-  cudaError_t st = cudaMalloc(&buffers_[input_index0_], data_size_ * sizeof(float));          // data
+  cudaError_t st = cudaMalloc(&buffers_[input_index0_], data_size_ * sizeof(float));  // data
   CHECK_EQ(st, cudaSuccess) << "Could not allocate data layer.";
-  st = cudaMalloc(&buffers_[input_index1_], 3 * sizeof(float));                 // im_info
+  st = cudaMalloc(&buffers_[input_index1_], 3 * sizeof(float));                       // im_info
   CHECK_EQ(st, cudaSuccess) << "Could not allocate im_info layer.";
-  st = cudaMalloc(&buffers_[output_index0_], bbox_pred_size_ * sizeof(float));  // bbox_pred
+  st = cudaMalloc(&buffers_[output_index0_], bbox_pred_size_ * sizeof(float));        // bbox_pred
   CHECK_EQ(st, cudaSuccess) << "Could not allocate bbox_pred layer.";
-  st = cudaMalloc(&buffers_[output_index1_], cls_prob_size_ * sizeof(float));   // cls_prob
+  st = cudaMalloc(&buffers_[output_index1_], cls_prob_size_ * sizeof(float));         // cls_prob
   CHECK_EQ(st, cudaSuccess) << "Could not allocate cls_prob layer.";
-  st = cudaMalloc(&buffers_[output_index2_], rois_size_ * sizeof(float));       // rois
+  st = cudaMalloc(&buffers_[output_index2_], rois_size_ * sizeof(float));             // rois
   CHECK_EQ(st, cudaSuccess) << "Could not allocate rois layer.";
 
   input_cv_size_ = Size(input_dim_.w(), input_dim_.h());
@@ -302,8 +300,6 @@ void Classifier::Predict(const Mat& img)
   WrapInputLayer(&input_channels);
   Preprocess(img, &input_channels);
 
-  // cudaError_t st = cudaMemcpyAsync(buffers_[input_index0_], inputData, data_size_ * sizeof(float), cudaMemcpyHostToDevice, stream_);
-  // CHECK_EQ(st, cudaSuccess) << "Could not copy data layer.";
   cudaError_t st = cudaMemcpyAsync(buffers_[input_index1_], im_info_, 3 * sizeof(float), cudaMemcpyHostToDevice, stream_);
   CHECK_EQ(st, cudaSuccess) << "Could not copy im_info layer.";
   context_->enqueue(1, buffers_, stream_, nullptr);
@@ -385,8 +381,6 @@ void Classifier::Preprocess(const Mat& host_img,
     sample_resized.convertTo(sample_float, CV_32FC1);
 
   GpuMat sample_normalized(allocator_);
-  // sample_float -= Scalar(102.9801, 115.9465, 122.7717);
-  // sample_float.convertTo(sample_normalized, CV_32FC3);
   cuda::subtract(sample_float, mean_, sample_normalized);
 
   /* This operation will write the separate BGR planes directly to the
@@ -424,7 +418,6 @@ class ExecContext
     }
 
     ExecContext(std::shared_ptr<InferenceEngine> engine,
-                // const string& mean_file,
                 const string& label_file,
                 int device)
         : device_(device)
@@ -435,7 +428,6 @@ class ExecContext
         throw std::invalid_argument("could not set CUDA device");
 
       allocator_.reset(new GPUAllocator(1024 * 1024 * 128));
-      // classifier_.reset(new Classifier(engine, mean_file, label_file, allocator_.get()));
       classifier_.reset(new Classifier(engine, label_file, allocator_.get()));
     }
 
@@ -468,8 +460,7 @@ struct classifier_ctx
 
 constexpr static int kContextsPerDevice = 2;
 
-classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char* label_file)
-                                      // char* mean_file, char* label_file)
+classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char* label_file, char* trt_model)
 {
   try
   {
@@ -489,12 +480,10 @@ classifier_ctx* classifier_initialize(char* model_file, char* trained_file, char
         continue;
       }
 
-      std::shared_ptr<InferenceEngine> engine(new InferenceEngine(model_file, trained_file, std::vector<std::string>{OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2}));
+      std::shared_ptr<InferenceEngine> engine(new InferenceEngine(model_file, trained_file, trt_model, std::vector<std::string>{OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2}));
 
       for (int i = 0; i < kContextsPerDevice; ++i)
       {
-        // std::unique_ptr<ExecContext> context(new ExecContext(engine, mean_file,
-        //                                                         label_file, dev));
         std::unique_ptr<ExecContext> context(new ExecContext(engine, label_file, dev));
         pool.Push(std::move(context));
       }
@@ -534,12 +523,12 @@ const char* classifier_classify(classifier_ctx* ctx,
           * exiting this scope. */
       ScopedContext<ExecContext> context(ctx->pool);
       auto classifier = context->TensorRTClassifier();
-      auto start = std::chrono::high_resolution_clock::now();
+      // auto start = std::chrono::high_resolution_clock::now();
       predictions = classifier->Classify(img);
-      auto finish = std::chrono::high_resolution_clock::now();
-      std::cout << "classify() took "
-          << std::chrono::duration_cast<milli>(finish - start).count()
-          << " milliseconds\n";
+      // auto finish = std::chrono::high_resolution_clock::now();
+      // gLogInfo << "classify() took "
+      //     << std::chrono::duration_cast<milli>(finish - start).count()
+      //     << " milliseconds\n";
     }
 
     /* Write the top N predictions in JSON format. */
@@ -556,7 +545,6 @@ const char* classifier_classify(classifier_ctx* ctx,
         os << "\"xmax\":" << std::fixed << static_cast<int>(p.second->y) << ",";
         os << "\"ymin\":" << std::fixed << static_cast<int>(p.second->w) << ",";
         os << "\"ymax\":" << std::fixed << static_cast<int>(p.second->h) << "}";
-        // os << "\"label\":" << "\"" << p.first << "\"" << "}";
         if (i != predictions.size() - 1)
             os << ",";
     }

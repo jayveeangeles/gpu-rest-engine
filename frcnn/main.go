@@ -1,7 +1,7 @@
 package main
 
 // #cgo pkg-config: opencv cudart-10.0
-// #cgo LDFLAGS: -lnvinfer -lnvcaffe_parser -lnvinfer_plugin -lglog -lboost_system -lboost_thread
+// #cgo LDFLAGS: -lnvinfer -lnvcaffe_parser -lnvinfer_plugin -lglog -lboost_system -lboost_thread -lstdc++fs 
 // #cgo CXXFLAGS: -std=c++11 -I.. -O2 -fomit-frame-pointer -Wall
 // #include <stdlib.h>
 // #include "frcnn.h"
@@ -41,23 +41,24 @@ func classify(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-  var model, trained, label string
+  var model, trained, label, trtmodel string
 
   flag.StringVar(&model,    "model",    "./deploy.pt",        "model prototxt")
   flag.StringVar(&trained,  "trained",  "./model.caffemodel", "trained model")
   flag.StringVar(&label,    "label",    "./cls.txt",          "text file with labels")
+  flag.StringVar(&trtmodel, "trtmodel", "./model.trt",        "TensorRT Model")
 
   flag.Parse()
 
 	cmodel    := C.CString(model)
 	ctrained  := C.CString(trained)
   clabel    := C.CString(label)
-  // ctrtmodel := C.CString(os.Args[4])
+  ctrtmodel := C.CString(trtmodel)
 
 	log.Println("Initializing TensorRT classifiers")
 	var err error
   // ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
-  ctx, err = C.classifier_initialize(cmodel, ctrained, clabel)
+  ctx, err = C.classifier_initialize(cmodel, ctrained, clabel, ctrtmodel)
 	if err != nil {
 		log.Fatalln("could not initialize classifier:", err)
 		return
@@ -66,7 +67,7 @@ func main() {
   defer C.free(unsafe.Pointer(cmodel))
   defer C.free(unsafe.Pointer(ctrained))
   defer C.free(unsafe.Pointer(clabel))
-  // defer C.free(unsafe.Pointer(ctrtmodel))
+  defer C.free(unsafe.Pointer(ctrtmodel))
 
 	log.Println("Adding REST endpoint /api/classify")
 	http.HandleFunc("/api/classify", classify)

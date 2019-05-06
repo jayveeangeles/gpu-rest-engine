@@ -131,3 +131,43 @@ void getBbox(std::vector<box*>& boxes, float **outputData, float nmsThresh, floa
 		}
 	}
 }
+
+bool fileExists(const std::string fileName)
+{
+  if (!std::experimental::filesystem::exists(std::experimental::filesystem::path(fileName)))
+  {
+    gLogInfo << "File does not exist : " << fileName << std::endl;
+    return false;
+  }
+  return true;
+}
+
+nvinfer1::ICudaEngine* loadTRTEngine(const std::string planFilePath, nvinfer1::IPluginFactory* pluginFactory,
+                                     Logger& logger)
+{
+  // reading the model in memory
+  gLogInfo << "Loading TRT Engine..." << std::endl;
+  assert(fileExists(planFilePath));
+  std::stringstream trtModelStream;
+  trtModelStream.seekg(0, trtModelStream.beg);
+  std::ifstream cache(planFilePath);
+  assert(cache.good());
+  trtModelStream << cache.rdbuf();
+  cache.close();
+
+  // calculating model size
+  trtModelStream.seekg(0, std::ios::end);
+  const int modelSize = trtModelStream.tellg();
+  trtModelStream.seekg(0, std::ios::beg);
+  void* modelMem = malloc(modelSize);
+  trtModelStream.read((char*) modelMem, modelSize);
+
+  nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(logger.getTRTLogger());
+  nvinfer1::ICudaEngine* engine
+      = runtime->deserializeCudaEngine(modelMem, modelSize, pluginFactory);
+  free(modelMem);
+  runtime->destroy();
+  gLogInfo << "Loading Complete!" << std::endl;
+
+  return engine;
+}
