@@ -13,7 +13,8 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"net/http"
+  "net/http"
+  "time"
 	// "os"
 )
 
@@ -31,13 +32,18 @@ func FRCNNDetect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+  start := time.Now()
 	cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
   }
+  elapsed := time.Since(start)
+  log.Printf("Detection took %s", elapsed)
   
-	defer C.free(unsafe.Pointer(cstr))
+  defer C.free(unsafe.Pointer(cstr))
+
+  w.Header().Set("Content-Type", "application/json")
 	io.WriteString(w, C.GoString(cstr))
 }
 
@@ -58,12 +64,12 @@ func main() {
 
 	log.Println("Initializing TensorRT classifiers")
 	var err error
-  // ctx, err = C.classifier_initialize(cmodel, ctrained, cmean, clabel)
   ctx, err = C.frcnn_initialize(cmodel, ctrained, clabel, ctrtmodel)
 	if err != nil {
 		log.Fatalln("could not initialize classifier:", err)
 		return
-	}
+  }
+  
   defer C.frcnn_destroy(ctx)
   defer C.free(unsafe.Pointer(cmodel))
   defer C.free(unsafe.Pointer(ctrained))
