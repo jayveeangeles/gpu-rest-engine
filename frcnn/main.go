@@ -8,6 +8,7 @@ package main
 import "C"
 import "unsafe"
 import "flag"
+import "fmt"
 
 import (
 	"io"
@@ -21,63 +22,66 @@ import (
 var ctx *C.frcnn_ctx
 
 func FRCNNDetect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "", http.StatusMethodNotAllowed)
-		return
-	}
+  if r.Method != "POST" {
+    http.Error(w, "", http.StatusMethodNotAllowed)
+    return
+  }
 
-	buffer, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+  buffer, err := ioutil.ReadAll(r.Body)
+  if err != nil {
+    http.Error(w, err.Error(), http.StatusBadRequest)
+    return
+  }
 
   start := time.Now()
-	cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+  cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
+  if err != nil {
+    http.Error(w, err.Error(), http.StatusBadRequest)
+    return
   }
   elapsed := time.Since(start)
   log.Printf("Detection took %s", elapsed)
-  
+
   defer C.free(unsafe.Pointer(cstr))
 
   w.Header().Set("Content-Type", "application/json")
-	io.WriteString(w, C.GoString(cstr))
+  io.WriteString(w, C.GoString(cstr))
 }
 
 func main() {
   var model, trained, label, trtmodel string
+  var port int
 
   flag.StringVar(&model,    "model",    "./deploy.pt",        "model prototxt")
   flag.StringVar(&trained,  "trained",  "./model.caffemodel", "trained model")
   flag.StringVar(&label,    "label",    "./cls.txt",          "text file with labels")
   flag.StringVar(&trtmodel, "trtmodel", "./model.trt",        "TensorRT Model")
 
+  flag.IntVar(&port,  "port", 8000, "TensorRT Model")
+
   flag.Parse()
 
-	cmodel    := C.CString(model)
-	ctrained  := C.CString(trained)
+  cmodel    := C.CString(model)
+  ctrained  := C.CString(trained)
   clabel    := C.CString(label)
   ctrtmodel := C.CString(trtmodel)
 
-	log.Println("Initializing TensorRT classifiers")
-	var err error
+  log.Println("Initializing TensorRT classifiers")
+  var err error
   ctx, err = C.frcnn_initialize(cmodel, ctrained, clabel, ctrtmodel)
-	if err != nil {
-		log.Fatalln("could not initialize classifier:", err)
-		return
+  if err != nil {
+    log.Fatalln("could not initialize classifier:", err)
+    return
   }
-  
+
   defer C.frcnn_destroy(ctx)
   defer C.free(unsafe.Pointer(cmodel))
   defer C.free(unsafe.Pointer(ctrained))
   defer C.free(unsafe.Pointer(clabel))
   defer C.free(unsafe.Pointer(ctrtmodel))
 
-	log.Println("Adding REST endpoint /api/inference")
-	http.HandleFunc("/api/inference", FRCNNDetect)
-	log.Println("Starting server listening on :8000")
-	log.Fatal(http.ListenAndServe(":8000", nil))
+  log.Println("Adding REST endpoint /api/inference")
+  http.HandleFunc("/api/inference", FRCNNDetect)
+  log.Println(fmt.Sprintf("Starting server listening on :%d", port))
+  log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
