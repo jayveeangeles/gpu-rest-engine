@@ -15,7 +15,9 @@ Logger gLogger{Logger::Severity::kWARNING};
 //! gLoggerSample is used to set default reportability level for sample specific logging.
 Logger gLoggerSample{Logger::Severity::kINFO};
 
-// LogStreamConsumer gLogVerbose{LOG_VERBOSE(gLoggerSample)};
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+LogStreamConsumer gLogVerbose{LOG_VERBOSE(gLoggerSample)};
+#endif
 LogStreamConsumer gLogInfo{LOG_INFO(gLoggerSample)};
 LogStreamConsumer gLogWarning{LOG_WARN(gLoggerSample)};
 LogStreamConsumer gLogError{LOG_ERROR(gLoggerSample)};
@@ -24,7 +26,9 @@ LogStreamConsumer gLogFatal{LOG_FATAL(gLoggerSample)};
 void setReportableSeverity(Logger::Severity severity)
 {
   gLogger.setReportableSeverity(severity);
-  // gLogVerbose.setReportableSeverity(severity);
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+  gLogVerbose.setReportableSeverity(severity);
+#endif
   gLogInfo.setReportableSeverity(severity);
   gLogWarning.setReportableSeverity(severity);
   gLogError.setReportableSeverity(severity);

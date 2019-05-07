@@ -4,7 +4,9 @@
 #include "logging.h"
 
 extern Logger gLogger;
-// extern LogStreamConsumer gLogVerbose;
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+extern LogStreamConsumer gLogVerbose;
+#endif
 extern LogStreamConsumer gLogInfo;
 extern LogStreamConsumer gLogWarning;
 extern LogStreamConsumer gLogError;

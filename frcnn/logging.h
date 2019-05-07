@@ -137,7 +137,9 @@ private:
       case Severity::kERROR: return "[ERRR] ";
       case Severity::kWARNING: return "[WARN] ";
       case Severity::kINFO: return "[INFO] ";
-      // case Severity::kVERBOSE: return "[V] ";
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+      case Severity::kVERBOSE: return "[VERB] ";
+#endif
       default: assert(0); return "";
     }
   }
@@ -350,7 +352,9 @@ private:
         case Severity::kERROR: return "[ERRR] ";
         case Severity::kWARNING: return "[WARN] ";
         case Severity::kINFO: return "[INFO] ";
-        // case Severity::kVERBOSE: return "[V] ";
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+        case Severity::kVERBOSE: return "[VERB] ";
+#endif
         default: assert(0); return "";
       }
   }
@@ -416,10 +420,12 @@ namespace
 //!
 //!     LOG_VERBOSE(logger) << "hello world" << std::endl;
 //!
-// inline LogStreamConsumer LOG_VERBOSE(const Logger& logger)
-// {
-//   return LogStreamConsumer(logger.getReportableSeverity(), Severity::kVERBOSE);
-// }
+#if NV_TENSORRT_MAJOR == 5 && NV_TENSORRT_MINOR > 0
+inline LogStreamConsumer LOG_VERBOSE(const Logger& logger)
+{
+  return LogStreamConsumer(logger.getReportableSeverity(), Severity::kVERBOSE);
+}
+#endif
 
 //!
 //! \brief produces a LogStreamConsumer object that can be used to log messages of severity kINFO
