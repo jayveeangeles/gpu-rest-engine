@@ -9,6 +9,7 @@ import "C"
 import "unsafe"
 import "flag"
 import "fmt"
+import "strconv"
 
 import (
 	"io"
@@ -27,20 +28,40 @@ func FRCNNDetect(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  buffer, err := ioutil.ReadAll(r.Body)
+  if err := r.ParseMultipartForm(5 * 1000); err != nil {
+    fmt.Fprintf(w, "ParseForm() err: %v", err)
+    http.Error(w, err.Error(), http.StatusBadRequest)
+    return
+  }
+
+  imageFile, header, err := r.FormFile("imagefile")
+  if err != nil {
+    http.Error(w, err.Error(), http.StatusBadRequest)
+    return
+  }
+  defer imageFile.Close()
+
+  confthre := "0.5"
+  if ct := r.FormValue("confthre"); ct != "" {
+    confthre = ct
+  }
+
+  confThresh, err := strconv.ParseFloat(confthre, 64)
+
+  buffer, err := ioutil.ReadAll(imageFile)
   if err != nil {
     http.Error(w, err.Error(), http.StatusBadRequest)
     return
   }
 
   start := time.Now()
-  cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)))
+  cstr, err := C.frcnn_detect(ctx, (*C.char)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)), C.float(confThresh))
   if err != nil {
     http.Error(w, err.Error(), http.StatusBadRequest)
     return
   }
   elapsed := time.Since(start)
-  log.Printf("Detection took %s", elapsed)
+  log.Printf("Detection took %12s for %#v", elapsed, header.Filename)
 
   defer C.free(unsafe.Pointer(cstr))
 

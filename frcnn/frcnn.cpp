@@ -138,7 +138,7 @@ public:
 
   ~FRCNNDetector();
 
-  std::vector<Prediction> Detect(const Mat& img);
+  std::vector<Prediction> Detect(const Mat& img, float confthre);
 
 private:
   void SetModel();
@@ -277,14 +277,14 @@ void FRCNNDetector::SetLabels(const string& label_file)
 }
 
 /* Return the top N predictions. */
-std::vector<Prediction> FRCNNDetector::Detect(const Mat& img)
+std::vector<Prediction> FRCNNDetector::Detect(const Mat& img, float confthre)
 {
   std::vector<box *> boxes;
   std::vector<Prediction> predictions;
   Predict(img);
   float *output_data[] = {bbox_preds_.data(), cls_probs_.data(), rois_.data()};
 
-  getBbox(boxes, output_data, 0.45, 0.5, im_info_, 1, NMS_MAX_OUT, labels_.size() + 1);
+  getBbox(boxes, output_data, 0.45, confthre, im_info_, 1, NMS_MAX_OUT, labels_.size() + 1);
 
   for (auto& s : boxes)
     if (s->cls > 0)
@@ -506,7 +506,7 @@ frcnn_ctx* frcnn_initialize(char* model_file, char* trained_file, char* label_fi
 }
 
 const char* frcnn_detect(frcnn_ctx* ctx,
-                                char* buffer, size_t length)
+                                char* buffer, size_t length, float confthre)
 {
   try
   {
@@ -524,7 +524,7 @@ const char* frcnn_detect(frcnn_ctx* ctx,
       ScopedContext<ExecContext> context(ctx->pool);
       auto detector = context->TensorRTFRCNNDetector();
       // auto start = std::chrono::high_resolution_clock::now();
-      predictions = detector->Detect(img);
+      predictions = detector->Detect(img, confthre);
       // auto finish = std::chrono::high_resolution_clock::now();
       // std::cout << "classify() took "
       //     << std::chrono::duration_cast<milli>(finish - start).count()
