@@ -1,0 +1,6 @@
+{
+  "model": "/workspace/gpu-rest-engine-frcnn/data/deploy.prototxt",
+  "trained": "/workspace/gpu-rest-engine-frcnn/data/model.caffemodel",
+  "label": "/workspace/gpu-rest-engine-frcnn/data/cls.txt",
+  "trtmodel": "/tmp/model.trt"
+}

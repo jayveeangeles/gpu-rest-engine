@@ -20,7 +20,7 @@
 #include "common.h"
 #include "gpu_allocator.h"
 #include "pluginFactory.h" //
-#include <chrono>
+// #include <chrono>
 
 using namespace nvinfer1;
 using namespace nvcaffeparser1;
@@ -29,7 +29,7 @@ using std::string;
 using GpuMat = cuda::GpuMat;
 using namespace cv;
 
-using milli = std::chrono::milliseconds;
+// using milli = std::chrono::milliseconds;
 
 const char* INPUT_BLOB_NAME0 = "data";
 const char* INPUT_BLOB_NAME1 = "im_info";
@@ -42,6 +42,7 @@ static const int MAX_SIZE = 500;
 static const int NMS_MAX_OUT = 300; // This value needs to be changed as per the nmsMaxOut value set in RPROI plugin parameters in prototxt
 
 typedef std::pair<string, box*> Prediction;
+typedef std::tuple<std::vector<float>, std::vector<float>, std::vector<float>> FRCNNOutputs;
 
 class InferenceEngine
 {
@@ -76,7 +77,11 @@ InferenceEngine::InferenceEngine(const string& model_file,
   INetworkDefinition* network = builder->createNetwork();
 
   ICaffeParser* parser = createCaffeParser();
+#if NV_TENSORRT_MAJOR == 5
   parser->setPluginFactoryV2(&pluginFactorySerialize); //
+#elif NV_TENSORRT_MAJOR == 4
+  parser->setPluginFactory(&pluginFactorySerialize);
+#endif
 
   auto blob_name_to_tensor = parser->parse(model_file.c_str(),
                                             trained_file.c_str(),
@@ -147,7 +152,7 @@ private:
 
   void SetLabels(const string& label_file);
 
-  void Predict(const Mat& img);
+  FRCNNOutputs Predict(const Mat& img);
 
   void WrapInputLayer(std::vector<GpuMat>* input_channels);
 
@@ -183,10 +188,6 @@ private:
   float scale_;
 
   float im_info_ [3];
-  std::vector<float> rois_;
-  std::vector<float> bbox_preds_;
-  std::vector<float> cls_probs_;
-  std::vector<float> pred_bboxes_;
 };
 
 FRCNNDetector::FRCNNDetector(std::shared_ptr<InferenceEngine> engine,
@@ -204,13 +205,6 @@ FRCNNDetector::FRCNNDetector(std::shared_ptr<InferenceEngine> engine,
   SetLabels(label_file);
   SetModel();
   SetMean();
-  // Host memory for outputs
-  rois_.assign(NMS_MAX_OUT * 4, 0);
-  bbox_preds_.assign(NMS_MAX_OUT * (labels_.size() + 1) * 4, 0);
-  cls_probs_.assign(NMS_MAX_OUT * (labels_.size() + 1) * 4, 0);
-
-  // Predicted bounding boxes
-  pred_bboxes_.assign(NMS_MAX_OUT * (labels_.size() + 1) * 4, 0);
 }
 
 FRCNNDetector::~FRCNNDetector()
@@ -281,8 +275,8 @@ std::vector<Prediction> FRCNNDetector::Detect(const Mat& img, float confthre)
 {
   std::vector<box *> boxes;
   std::vector<Prediction> predictions;
-  Predict(img);
-  float *output_data[] = {bbox_preds_.data(), cls_probs_.data(), rois_.data()};
+  auto outputs = Predict(img);
+  float *output_data[] = {std::get<0>(outputs).data(), std::get<1>(outputs).data(), std::get<2>(outputs).data()};
 
   getBbox(boxes, output_data, 0.45, confthre, im_info_, 1, NMS_MAX_OUT, labels_.size() + 1);
 
@@ -293,7 +287,7 @@ std::vector<Prediction> FRCNNDetector::Detect(const Mat& img, float confthre)
   return predictions;
 }
 
-void FRCNNDetector::Predict(const Mat& img)
+FRCNNOutputs FRCNNDetector::Predict(const Mat& img)
 {
   std::vector<GpuMat> input_channels;
 
@@ -303,13 +297,22 @@ void FRCNNDetector::Predict(const Mat& img)
   cudaError_t st = cudaMemcpyAsync(buffers_[input_index1_], im_info_, 3 * sizeof(float), cudaMemcpyHostToDevice, stream_);
   CHECK_EQ(st, cudaSuccess) << "Could not copy im_info layer.";
   context_->enqueue(1, buffers_, stream_, nullptr);
+
+  std::vector<float> bbox_preds_(bbox_pred_size_);
   st = cudaMemcpyAsync(bbox_preds_.data(), buffers_[output_index0_], bbox_pred_size_ * sizeof(float), cudaMemcpyDeviceToHost, stream_);
   CHECK_EQ(st, cudaSuccess) << "Could not copy out bbox_preds layer.";
+
+  std::vector<float> cls_probs_(bbox_pred_size_);
   st = cudaMemcpyAsync(cls_probs_.data(), buffers_[output_index1_], cls_prob_size_ * sizeof(float), cudaMemcpyDeviceToHost, stream_);
   CHECK_EQ(st, cudaSuccess) << "Could not copy out cls_probs layer.";
+
+  std::vector<float> rois_(rois_size_);
   st = cudaMemcpyAsync(rois_.data(), buffers_[output_index2_], rois_size_ * sizeof(float), cudaMemcpyDeviceToHost, stream_);
   CHECK_EQ(st, cudaSuccess) << "Could not copy out rois layer.";
+
   cudaStreamSynchronize(stream_);
+
+  return std::make_tuple(bbox_preds_, cls_probs_, rois_);
 }
 
 /* Wrap the input layer of the network in separate Mat objects
