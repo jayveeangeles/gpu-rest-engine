@@ -136,7 +136,11 @@ bool fileExists(const std::string fileName)
 {
   if (!std::experimental::filesystem::exists(std::experimental::filesystem::path(fileName)))
   {
+#if NV_TENSORRT_MAJOR >= 5
     gLogInfo << "File does not exist : " << fileName << std::endl;
+#else
+		std::cout << "File does not exist : " << fileName << std::endl;
+#endif
     return false;
   }
   return true;
@@ -146,7 +150,11 @@ nvinfer1::ICudaEngine* loadTRTEngine(const std::string planFilePath, nvinfer1::I
                                      Logger& logger)
 {
   // reading the model in memory
+#if NV_TENSORRT_MAJOR >= 5
   gLogInfo << "Loading TRT Engine..." << std::endl;
+#else
+	std::cout << "Loading TRT Engine..." << std::endl;
+#endif
   assert(fileExists(planFilePath));
   std::stringstream trtModelStream;
   trtModelStream.seekg(0, trtModelStream.beg);
@@ -161,13 +169,20 @@ nvinfer1::ICudaEngine* loadTRTEngine(const std::string planFilePath, nvinfer1::I
   trtModelStream.seekg(0, std::ios::beg);
   void* modelMem = malloc(modelSize);
   trtModelStream.read((char*) modelMem, modelSize);
-
+#if NV_TENSORRT_MAJOR >= 5
   nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(logger.getTRTLogger());
+#else
+	nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(gLogger);
+#endif
   nvinfer1::ICudaEngine* engine
       = runtime->deserializeCudaEngine(modelMem, modelSize, pluginFactory);
   free(modelMem);
   runtime->destroy();
+#if NV_TENSORRT_MAJOR >= 5
   gLogInfo << "Loading Complete!" << std::endl;
+#else
+	std::cout << "Loading Complete!" << std::endl;
+#endif
 
   return engine;
 }

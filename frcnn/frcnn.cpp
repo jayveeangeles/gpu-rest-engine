@@ -70,16 +70,20 @@ InferenceEngine::InferenceEngine(const string& model_file,
                                  const std::vector<std::string>& outputs)
 {
   FRCNNPluginFactory pluginFactorySerialize; //
+#if NV_TENSORRT_MAJOR >= 5
   initLibNvInferPlugins(&gLogger.getTRTLogger(), "");
   IBuilder* builder = createInferBuilder(gLogger.getTRTLogger());
+#else
+  IBuilder* builder = createInferBuilder(gLogger);
+#endif
 
   // parse the caffe model to populate the network, then set the outputs
   INetworkDefinition* network = builder->createNetwork();
 
   ICaffeParser* parser = createCaffeParser();
-#if NV_TENSORRT_MAJOR == 5
+#if NV_TENSORRT_MAJOR >= 5
   parser->setPluginFactoryV2(&pluginFactorySerialize); //
-#elif NV_TENSORRT_MAJOR == 4
+#else
   parser->setPluginFactory(&pluginFactorySerialize);
 #endif
 
@@ -95,8 +99,14 @@ InferenceEngine::InferenceEngine(const string& model_file,
 
   if (fileExists(trt_model))
   {
+#if NV_TENSORRT_MAJOR >= 5
     gLogInfo << "Using previously generated plan file located at " << trt_model
         << std::endl;
+#else
+    std::cout << "Using previously generated plan file located at " << trt_model
+        << std::endl;
+    // engine_ = loadTRTEngine(trt_model, &pluginFactorySerialize, gLogger);
+#endif
     engine_ = loadTRTEngine(trt_model, nullptr, gLogger);
     return;
   }
@@ -104,7 +114,9 @@ InferenceEngine::InferenceEngine(const string& model_file,
   // Build the engine
   builder->setMaxBatchSize(1);
   builder->setMaxWorkspaceSize(1 << 30);
-  builder->setHalf2Mode(true);
+  // builder->setHalf2Mode(true);
+  builder->setFp16Mode(true);
+  builder->setStrictTypeConstraints(true);
 
   engine_ = builder->buildCudaEngine(*network);
   serialized_model_ = engine_->serialize();
@@ -119,8 +131,11 @@ InferenceEngine::InferenceEngine(const string& model_file,
   outFile << gie_model_stream.rdbuf();
   outFile.close();
 
+#if NV_TENSORRT_MAJOR >= 5
   gLogInfo << "Serialized plan file cached at location : " << trt_model << std::endl;
-
+#else
+  std::cout << "Serialized plan file cached at location : " << trt_model << std::endl;
+#endif 
   network->destroy();
   builder->destroy();
   parser->destroy();

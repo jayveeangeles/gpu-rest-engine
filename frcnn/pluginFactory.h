@@ -22,7 +22,7 @@ const float spatialScale = 0.0625f;
 const float anchorsRatios[anchorsRatioCount] = {0.5f, 1.0f, 2.0f};
 const float anchorsScales[anchorsScaleCount] = {8.0f, 16.0f, 32.0f};
 
-#if NV_TENSORRT_MAJOR == 5
+#if NV_TENSORRT_MAJOR >= 5
 class FRCNNPluginFactory : public nvcaffeparser1::IPluginFactoryV2
 {
   public:
@@ -59,7 +59,7 @@ class FRCNNPluginFactory : public nvcaffeparser1::IPluginFactoryV2
     std::unique_ptr<IPluginV2, decltype(pluginDeleter)> mPluginRPROI{nullptr, pluginDeleter};
 };
 
-#elif NV_TENSORRT_MAJOR == 4
+#else
 #include <string.h>
 #include <stdio.h>
 #include <iostream>
