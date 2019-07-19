@@ -19,8 +19,11 @@
 #include "helper.h"
 #include "common.h"
 #include "gpu_allocator.h"
+#if (NV_TENSORRT_SONAME_MAJOR == 5 && NV_TENSORRT_SONAME_MINOR == 0) || \
+  NV_TENSORRT_SONAME_MAJOR == 4
 #include "pluginFactory.h" //
-// #include <chrono>
+#endif
+#include <chrono>
 
 using namespace nvinfer1;
 using namespace nvcaffeparser1;
@@ -29,7 +32,7 @@ using std::string;
 using GpuMat = cuda::GpuMat;
 using namespace cv;
 
-// using milli = std::chrono::milliseconds;
+using milli = std::chrono::milliseconds;
 
 const char* INPUT_BLOB_NAME0 = "data";
 const char* INPUT_BLOB_NAME1 = "im_info";
@@ -69,8 +72,12 @@ InferenceEngine::InferenceEngine(const string& model_file,
                                  const string& trt_model,
                                  const std::vector<std::string>& outputs)
 {
+#if (NV_TENSORRT_SONAME_MAJOR == 5 && NV_TENSORRT_SONAME_MINOR == 0) || \
+  NV_TENSORRT_SONAME_MAJOR == 4
   FRCNNPluginFactory pluginFactorySerialize; //
-#if NV_TENSORRT_MAJOR >= 5
+#endif
+
+#if NV_TENSORRT_SONAME_MAJOR >= 5
   initLibNvInferPlugins(&gLogger.getTRTLogger(), "");
   IBuilder* builder = createInferBuilder(gLogger.getTRTLogger());
 #else
@@ -81,9 +88,9 @@ InferenceEngine::InferenceEngine(const string& model_file,
   INetworkDefinition* network = builder->createNetwork();
 
   ICaffeParser* parser = createCaffeParser();
-#if NV_TENSORRT_MAJOR >= 5
+#if NV_TENSORRT_SONAME_MAJOR == 5 && NV_TENSORRT_SONAME_MINOR == 0
   parser->setPluginFactoryV2(&pluginFactorySerialize); //
-#else
+#elif NV_TENSORRT_SONAME_MAJOR == 4
   parser->setPluginFactory(&pluginFactorySerialize);
 #endif
 
@@ -99,7 +106,7 @@ InferenceEngine::InferenceEngine(const string& model_file,
 
   if (fileExists(trt_model))
   {
-#if NV_TENSORRT_MAJOR >= 5
+#if NV_TENSORRT_SONAME_MAJOR >= 5
     gLogInfo << "Using previously generated plan file located at " << trt_model
         << std::endl;
 #else
@@ -108,6 +115,11 @@ InferenceEngine::InferenceEngine(const string& model_file,
     // engine_ = loadTRTEngine(trt_model, &pluginFactorySerialize, gLogger);
 #endif
     engine_ = loadTRTEngine(trt_model, nullptr, gLogger);
+
+    // cleanup
+    network->destroy();
+    builder->destroy();
+    parser->destroy();
     return;
   }
 
@@ -139,7 +151,11 @@ InferenceEngine::InferenceEngine(const string& model_file,
   network->destroy();
   builder->destroy();
   parser->destroy();
+
+#if (NV_TENSORRT_SONAME_MAJOR == 5 && NV_TENSORRT_SONAME_MINOR == 0) || \
+  NV_TENSORRT_SONAME_MAJOR == 4
   pluginFactorySerialize.destroyPlugin();
+#endif
   serialized_model_->destroy();
   shutdownProtobufLibrary();
 }
@@ -293,7 +309,7 @@ std::vector<Prediction> FRCNNDetector::Detect(const Mat& img, float confthre)
   auto outputs = Predict(img);
   float *output_data[] = {std::get<0>(outputs).data(), std::get<1>(outputs).data(), std::get<2>(outputs).data()};
 
-  getBbox(boxes, output_data, 0.45, confthre, im_info_, 1, NMS_MAX_OUT, labels_.size() + 1);
+  getBoxes(boxes, output_data, 0.45, confthre, im_info_, 1, NMS_MAX_OUT, labels_.size() + 1);
 
   for (auto& s : boxes)
     if (s->cls > 0)
@@ -365,11 +381,11 @@ void FRCNNDetector::Preprocess(const Mat& host_img,
         scale_ = 1. * MAX_SIZE / max_size;
 
     first_frame_ = false;
+    
+    im_info_[0] = input_height_;
+    im_info_[1] = input_width_;
+    im_info_[2] = scale_;
   }
-
-  im_info_[0] = input_height_;
-  im_info_[1] = input_width_;
-  im_info_[2] = scale_;
 
   int num_channels = input_dim_.c();
   GpuMat img(host_img, allocator_);
@@ -530,7 +546,14 @@ const char* frcnn_detect(frcnn_ctx* ctx,
   {
     _InputArray array(buffer, length);
 
+    // auto start = std::chrono::high_resolution_clock::now();
+    // cv::Mat img(array.getSz(), CV_8UC3, (void *)buf1.ptr);
+    // cv::Mat img = array.getMat();
     Mat img = imdecode(array, -1);
+    // auto finish = std::chrono::high_resolution_clock::now();
+    // std::cout << "decde() took "
+    //     << std::chrono::duration_cast<milli>(finish - start).count()
+    //     << " milliseconds\n";
     if (img.empty())
       throw std::invalid_argument("could not decode image");
 

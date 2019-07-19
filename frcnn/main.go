@@ -12,13 +12,13 @@ import "fmt"
 import "strconv"
 
 import (
-	"io"
-	"io/ioutil"
-	"log"
+  "io"
+  "io/ioutil"
+  "log"
   "net/http"
   "time"
-	"os"
-	"encoding/json"
+  "os"
+  "encoding/json"
 )
 
 var ctx *C.frcnn_ctx
@@ -84,14 +84,14 @@ func main() {
   flag.StringVar(&model,    "model",    "./deploy.pt",        "model prototxt")
   flag.StringVar(&trained,  "trained",  "./model.caffemodel", "trained model")
   flag.StringVar(&label,    "label",    "./cls.txt",          "text file with labels")
-	flag.StringVar(&trtmodel, "trtmodel", "./model.trt",        "TensorRT Model")
-	flag.StringVar(&config, 	"config", 	"",      							"server config file")
+  flag.StringVar(&trtmodel, "trtmodel", "./model.trt",        "TensorRT Model")
+  flag.StringVar(&config, 	"config", 	"",      							"server config file")
 
   flag.StringVar(&model,    "m",	"./deploy.pt",        "model prototxt")
   flag.StringVar(&trained,  "t",  "./model.caffemodel", "trained model")
   flag.StringVar(&label,    "l", 	"./cls.txt",          "text file with labels")
-	flag.StringVar(&trtmodel, "T", 	"./model.trt",        "TensorRT Model")
-	flag.StringVar(&config, 	"c", 	"",      							"server config file")
+  flag.StringVar(&trtmodel, "T", 	"./model.trt",        "TensorRT Model")
+  flag.StringVar(&config, 	"c", 	"",      							"server config file")
 
 	flag.IntVar(&port,  "port", 8000, "TensorRT Model")
 

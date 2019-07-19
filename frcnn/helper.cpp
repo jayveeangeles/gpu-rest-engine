@@ -115,7 +115,7 @@ void bboxTransformInvAndClip(float* rois, float* deltas, float* predBBoxes, floa
 	}
 }
 
-void getBbox(std::vector<box*>& boxes, float **outputData, float nmsThresh, float detectThresh, float* imInfo, int batchSize, const int nmsMaxOut, const int outputClsSize)
+void getBoxes(std::vector<box*>& boxes, float **outputData, float nmsThresh, float detectThresh, float* imInfo, int batchSize, const int nmsMaxOut, const int outputClsSize)
 {
 	const int outputBBoxSize = outputClsSize * 4;
 	float* bboxPreds = outputData[0];
